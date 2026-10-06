@@ -10,4 +10,4 @@ python checks/check_task1.py --submission /caminho/do/repo/do/grupo
 
 `--dados` é opcional: o default é a pasta `dados/` ao lado de `checks/`.
 
-Pesos: ver [`../enunciado.md`](../enunciado.md).
+Pesos: ver [`../docs/enunciado.md`](../enunciado.md).
