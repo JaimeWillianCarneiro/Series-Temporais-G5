@@ -2,11 +2,11 @@
 
 ## Task 1 — Diagnóstico, baselines e ARIMA/SARIMA
 
-Pacote da Task 1 (prazo 30/09, 25% da A2). Enunciado, critérios e formato de entrega: [`enunciado.md`](enunciado.md).
+Pacote da Task 1 (prazo 30/09, 25% da A2). Enunciado, critérios e formato de entrega: [`enunciado.md`](docs/enunciado.md).
 
 | Peça | Arquivo |
 |------|---------|
-| Enunciado (prazo 30/09, 25% da A2, tabela de 10 pontos) | [`enunciado.md`](enunciado.md) · [`enunciado.pdf`](enunciado.pdf) |
+| Enunciado (prazo 30/09, 25% da A2, tabela de 10 pontos) | [`enunciado.md`](docs/enunciado.md) · [`enunciado.pdf`](docs/enunciado.pdf) |
 | Treino e validação conhecida | [`dados/`](dados/) |
 | Datas do holdout, sem y | [`dados/holdout_datas.csv`](dados/holdout_datas.csv) |
 | Script de checks (crédito parcial) | [`checks/check_task1.py`](checks/check_task1.py) |
