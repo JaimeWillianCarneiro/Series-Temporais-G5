@@ -222,5 +222,3 @@ __marimo__/
 # Dados e Datasets do Projeto
 # =========================
 data/
-# Saídas regeneradas pelos notebooks (a versão oficial é metricas.csv na raiz)
-src/entrega_1/metricas*.csv
