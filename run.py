@@ -1,321 +1,179 @@
 #!/usr/bin/env python3
-"""
-Task 1: ARIMA/SARIMA — Identificação, ajuste e previsão
-Gera previsoes_validacao.csv com previsões SARIMA para os 28 dias de validação
-"""
+"""Task 1 — diagnóstico, baselines e SARIMA.
 
-import pandas as pd
-import numpy as np
-import warnings
-warnings.filterwarnings('ignore')
+Gera, a partir de dados/:
+  - figuras/            série + ACF/PACF no treino (e das séries diferenciadas), previsões
+  - previsoes_validacao.csv
+  - metricas.csv
+  - saidas/ordens_sarima.csv e saidas/diagnostico_testes.csv
+Tudo é ajustado só no treino (até 2016-03-27); a validação serve apenas para avaliar.
+"""
+import os
 
-from statsmodels.tsa.statespace.sarimax import SARIMAX
+# um ajuste por processo: evita sobre-assinatura de threads do BLAS no grid paralelo
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")
+
 import itertools
+import sys
+import warnings
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from statsmodels.tools.sm_exceptions import ConvergenceWarning, EstimationWarning
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.stattools import adfuller, kpss
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from ts_utils import BASELINES, M, RAIZ, SERIES, calcular_baselines, calcular_metricas, carregar_dados  # noqa: E402
+
+FIG = RAIZ / "figuras"
+SAIDAS = RAIZ / "saidas"  # tabelas auxiliares (metricas.csv e previsoes_validacao.csv ficam na raiz)
+LAGS = 3 * M + 7  # 28 lags: 4 ciclos semanais
+
+# Grade guiada pelo diagnóstico: D=1 (sazonalidade semanal forte no ACF), d in {0,1}.
+GRADE = list(itertools.product(range(3), (0, 1), range(3), range(2), (1,), range(2)))
 
 
-SERIES_NAMES = ["store_total", "FOODS", "HOBBIES"]
-H = 28
-M = 7
+def diagnostico(treino):
+    """Figuras de série + ACF/PACF no treino, e ACF/PACF após diff(1) e diff sazonal(7)."""
+    FIG.mkdir(exist_ok=True)
+    linhas = []
+    for s in SERIES:
+        y = treino.set_index("date")[s]
+        fig, ax = plt.subplots(3, 1, figsize=(11, 9))
+        ax[0].plot(y.index, y.values, lw=0.6)
+        ax[0].plot(y.index, y.rolling(365, center=True).mean(), color="red", lw=1.5, label="média móvel 365d")
+        ax[0].set(title=f"{s} — treino (2011-01-29 a 2016-03-27)", ylabel="vendas")
+        ax[0].legend()
+        plot_acf(y.values, lags=LAGS, ax=ax[1], title=f"ACF — {s}")
+        plot_pacf(y.values, lags=LAGS, ax=ax[2], method="ywm", title=f"PACF — {s}")
+        fig.tight_layout()
+        fig.savefig(FIG / f"diagnostico_{s}.png", dpi=110)
+        plt.close(fig)
 
-def find_best_sarima(serie, serie_name, m=7):
-    """Grid search com fallback padrão"""
-    best_aic = np.inf
-    best_order = (1, 1, 1)
-    best_seasonal_order = (1, 0, 1, m)
-    found_valid = False
+        dif = y.diff().diff(M).dropna()
+        fig, ax = plt.subplots(2, 1, figsize=(11, 6))
+        plot_acf(dif.values, lags=LAGS, ax=ax[0], title=f"ACF — {s} após diff(1) e diff sazonal(7)")
+        plot_pacf(dif.values, lags=LAGS, ax=ax[1], method="ywm", title=f"PACF — {s} após diff(1) e diff sazonal(7)")
+        fig.tight_layout()
+        fig.savefig(FIG / f"acf_pacf_diferenciada_{s}.png", dpi=110)
+        plt.close(fig)
 
-    p_opts = [0, 1, 2]
-    d_opts = [0, 1]
-    q_opts = [0, 1, 2]
-    P_opts = [0, 1]
-    D_opts = [0, 1]
-    Q_opts = [0, 1]
-
-    total = len(p_opts) * len(d_opts) * len(q_opts) * len(P_opts) * len(D_opts) * len(Q_opts)
-    print(f"  {serie_name}: testando {total} combinações...")
-
-    for p, d, q, P, D, Q in itertools.product(p_opts, d_opts, q_opts, P_opts, D_opts, Q_opts):
-        try:
-            model = SARIMAX(serie, order=(p, d, q), seasonal_order=(P, D, Q, m),
-                          enforce_stationarity=False, enforce_invertibility=False)
-            results = model.fit(disp=False, maxiter=200)
-            aic = results.aic
-
-            if aic < best_aic:
-                best_aic = aic
-                best_order = (p, d, q)
-                best_seasonal_order = (P, D, Q, m)
-                found_valid = True
-        except:
-            continue
-
-    if not found_valid:
-        print(f"    ⚠ Usando fallback SARIMA{best_order}{best_seasonal_order}")
-    else:
-        print(f"    ✓ Melhor: SARIMA{best_order}{best_seasonal_order} (AIC={best_aic:.2f})")
-
-    return best_order, best_seasonal_order
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # kpss avisa quando p-valor sai da tabela
+            adf = adfuller(y.values, autolag="AIC")[1]
+            adf_sd = adfuller(y.diff(M).dropna().values, autolag="AIC")[1]
+            kp = kpss(y.values, regression="c", nlags="auto")[1]
+        linhas.append({
+            "series": s,
+            "zeros": int((y == 0).sum()),
+            "adf_p_nivel": adf,
+            "kpss_p_nivel": kp,
+            "adf_p_diff_sazonal": adf_sd,
+        })
+    return pd.DataFrame(linhas)
 
 
-def forecast_sarima(serie, order, seasonal_order, h):
-    """Ajusta e prevê"""
-    model = SARIMAX(serie, order=order, seasonal_order=seasonal_order,
-                   enforce_stationarity=False, enforce_invertibility=False)
-    results = model.fit(disp=False, maxiter=200)
-    forecast_result = results.get_forecast(steps=h)
-    if hasattr(forecast_result.predicted_mean, 'values'):
-        return forecast_result.predicted_mean.values
-    else:
-        return np.asarray(forecast_result.predicted_mean)
-
-def calcular_baselines(y_train, h=28, m=7):
-    """Gera os quatro baselines da atividade."""
-
-    # Média
-    yhat_media = np.full(h, np.mean(y_train))
-
-    # Naive
-    y_last = y_train[-1]
-    yhat_naive = np.full(h, y_last)
-
-    # Naive sazonal
-    yhat_sazonal = np.tile(y_train[-m:], h // m)
-
-    # Drift
-    T = len(y_train)
-    y_first = y_train[0]
-    C = (y_last - y_first) / (T - 1)
-
-    yhat_drift = y_last + np.arange(1, h + 1) * C
-
-    return {
-        "media": yhat_media,
-        "naive": yhat_naive,
-        "naive_sazonal": yhat_sazonal,
-        "drift": yhat_drift,
-    }
+def _ajusta(args):
+    y, ordem, sazonal = args
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ConvergenceWarning)
+            warnings.simplefilter("ignore", EstimationWarning)  # só indica start_params zerados
+            r = SARIMAX(y, order=ordem, seasonal_order=sazonal).fit(disp=False, maxiter=200)
+        return ordem, sazonal, r.aic, r.bic, bool(r.mle_retvals.get("converged", True))
+    except (np.linalg.LinAlgError, ValueError) as e:
+        print(f"    falhou {ordem}{sazonal}: {e}")
+        return None
 
 
-def calcular_metricas(y_train, y_val, yhat, m=7):
-    """Calcula MAE, RMSE e MASE."""
+def identificar_sarima(y, nome):
+    """Escolhe a ordem por menor AIC dentro de GRADE (ajuste só no treino)."""
+    tarefas = [(y, (p, d, q), (P, D, Q, M)) for p, d, q, P, D, Q in GRADE]
+    with ProcessPoolExecutor() as ex:
+        res = [r for r in ex.map(_ajusta, tarefas) if r is not None and r[4]]
+    res.sort(key=lambda r: r[2])
+    print(f"  {nome}: {len(res)}/{len(GRADE)} ajustes convergiram. Top 3 por AIC:")
+    for o, s, aic, _, _ in res[:3]:
+        print(f"    SARIMA{o}{s}  AIC={aic:.2f}")
+    return res[0]
 
-    erro = y_val - yhat
 
-    mae = np.mean(np.abs(erro))
-    rmse = np.sqrt(np.mean(erro**2))
+def prever_sarima(y, ordem, sazonal, h):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", EstimationWarning)
+        r = SARIMAX(y, order=ordem, seasonal_order=sazonal).fit(disp=False, maxiter=200)
+    return np.asarray(r.get_forecast(steps=h).predicted_mean)
 
-    # Escala do MASE:
-    # MAE do naive sazonal no conjunto de treino
-    escala_mase = np.mean(
-        np.abs(y_train[m:] - y_train[:-m])
-    )
 
-    mase = mae / escala_mase
-
-    return mae, rmse, mase
+def grafico_previsoes(treino, val, prev):
+    fig, ax = plt.subplots(3, 1, figsize=(11, 10))
+    for a, s in zip(ax, SERIES):
+        ult = treino.tail(56)
+        a.plot(ult["date"], ult[s], color="gray", label="treino (últimos 56d)")
+        a.plot(val["date"], val[s], color="black", label="validação (real)")
+        for m in ["naive_sazonal", "sarima"]:
+            d = prev[(prev.series == s) & (prev.modelo == m)]
+            a.plot(d["date"], d["yhat"], label=m)
+        a.set_title(s)
+        a.legend(ncol=4, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(FIG / "previsoes_validacao.png", dpi=110)
+    plt.close(fig)
 
 
 def main():
-    print("="*70)
-    print("Task 1: ARIMA/SARIMA")
-    print("="*70)
+    treino, val = carregar_dados()
+    h = len(val)
+    assert treino["date"].max() == pd.Timestamp("2016-03-27"), "treino deve acabar em 2016-03-27"
+    assert val["date"].min() == pd.Timestamp("2016-03-28") and h == 28
+    print(f"Treino: {len(treino)} dias | Validação: {h} dias")
 
-    print("\n1. Carregando dados...")
-    df_train = pd.read_csv("dados/treino.csv")
-    df_val = pd.read_csv("dados/validacao.csv")
+    print("\n1. Diagnóstico (figuras em figuras/)")
+    testes = diagnostico(treino)
+    print(testes.to_string(index=False))
+    SAIDAS.mkdir(exist_ok=True)
+    testes.to_csv(SAIDAS / "diagnostico_testes.csv", index=False)
 
-    df_train["date"] = pd.to_datetime(df_train["date"])
-    df_val["date"] = pd.to_datetime(df_val["date"])
+    print("\n2. Baselines e SARIMA")
+    linhas, ordens = [], []
+    for s in SERIES:
+        y = treino[s].to_numpy(dtype=float)
+        previsoes = calcular_baselines(y, h=h, m=M)
+        ordem, sazonal, aic, bic, _ = identificar_sarima(y, s)
+        previsoes["sarima"] = prever_sarima(y, ordem, sazonal, h)
+        ordens.append({"series": s, "order": ordem, "seasonal_order": sazonal, "aic": aic, "bic": bic})
+        for modelo, yhat in previsoes.items():
+            linhas += [{"date": d, "series": s, "modelo": modelo, "yhat": v} for d, v in zip(val["date"], yhat)]
+    prev = pd.DataFrame(linhas)
+    prev.to_csv(RAIZ / "previsoes_validacao.csv", index=False)
+    pd.DataFrame(ordens).to_csv(SAIDAS / "ordens_sarima.csv", index=False)
 
-    # series_names = ["store_total", "FOODS", "HOBBIES"]
-    h = len(df_val)
+    print("\n3. Métricas (só na validação)")
+    met = []
+    for s in SERIES:
+        y_tr, y_va = treino[s].to_numpy(dtype=float), val[s].to_numpy(dtype=float)
+        for modelo in BASELINES + ["sarima"]:
+            yhat = prev[(prev.series == s) & (prev.modelo == modelo)].sort_values("date")["yhat"].to_numpy()
+            mae, rmse, mase = calcular_metricas(y_tr, y_va, yhat)
+            met.append({"series": s, "modelo": modelo, "mae": mae, "rmse": rmse, "mase": mase})
+    met = pd.DataFrame(met)
+    met.to_csv(RAIZ / "metricas.csv", index=False)
+    print(met.round(3).to_string(index=False))
 
-    print(f"   Treino: {len(df_train)} dias | Validação: {h} dias")
+    grafico_previsoes(treino, val, prev)
+    print("\nOrdens SARIMA:")
+    print(pd.DataFrame(ordens).to_string(index=False))
+    print("\nConcluído: metricas.csv, previsoes_validacao.csv, saidas/, figuras/")
 
-    print("\n2. Gerando baselines...")
-
-    predictions = []
-    for serie_name in SERIES_NAMES:
-
-        y_train = df_train[serie_name].to_numpy()
-
-        baselines = calcular_baselines(
-            y_train,
-            h=h,
-            m=M
-        )
-
-        for modelo, forecast in baselines.items():
-
-            for date, yhat in zip(
-                df_val["date"],
-                forecast
-            ):
-                predictions.append(
-                    {
-                        "date": date,
-                        "series": serie_name,
-                        "modelo": modelo,
-                        "yhat": yhat,
-                    }
-                )
-
-
-    print("   ✓ Média")
-    print("   ✓ Naive")
-    print("   ✓ Naive sazonal")
-    print("   ✓ Drift")
-
-
-    print("\n3. Identificando ordens SARIMA...")
-
-    sarima_orders = {}
-
-    for serie_name in SERIES_NAMES:
-
-        y_train = df_train[serie_name].to_numpy()
-
-        order, seasonal_order = find_best_sarima(
-            y_train,
-            serie_name,
-            m=M
-        )
-
-        sarima_orders[serie_name] = (
-            order,
-            seasonal_order
-        )
-    print("\n4. Gerando previsões SARIMA...")
-
-    for serie_name in SERIES_NAMES:
-
-        y_train = df_train[serie_name].to_numpy()
-
-        order, seasonal_order = sarima_orders[
-            serie_name
-        ]
-
-        forecast = forecast_sarima(
-            y_train,
-            order,
-            seasonal_order,
-            h
-        )
-
-        for date, yhat in zip(
-            df_val["date"],
-            forecast
-        ):
-            predictions.append(
-                {
-                    "date": date,
-                    "series": serie_name,
-                    "modelo": "sarima",
-                    "yhat": yhat,
-                }
-            )
-
-    print("   ✓ SARIMA")
-
-
-    print("\n5. Salvando previsoes_validacao.csv...")
-    df_predictions = pd.DataFrame(predictions)
-    df_predictions.to_csv("previsoes_validacao.csv", index=False)
-    print(f"   ✓ {len(df_predictions)} previsões salvas")
-
-    print("\n6. Calculando métricas...")
-
-    metricas = []
-
-    for serie_name in SERIES_NAMES:
-
-        y_train = df_train[serie_name].to_numpy()
-        y_val = df_val[serie_name].to_numpy()
-
-        df_serie = df_predictions[
-            df_predictions["series"] == serie_name
-        ]
-
-        for modelo in [
-            "media",
-            "naive",
-            "naive_sazonal",
-            "drift",
-            "sarima",
-        ]:
-
-            yhat = (
-                df_serie[
-                    df_serie["modelo"] == modelo
-                ]
-                .sort_values("date")["yhat"]
-                .to_numpy()
-            )
-
-            mae, rmse, mase = calcular_metricas(
-                y_train,
-                y_val,
-                yhat,
-                m=M
-            )
-
-            metricas.append(
-                {
-                    "series": serie_name,
-                    "modelo": modelo,
-                    "mae": mae,
-                    "rmse": rmse,
-                    "mase": mase,
-                }
-            )
-
-    df_metricas = pd.DataFrame(metricas)
-
-    df_metricas.to_csv(
-        "metricas.csv",
-        index=False
-    )
-
-    print("   ✓ metricas.csv salvo")
-
-
-    print("\n" + "=" * 70)
-    print("ORDENS SARIMA IDENTIFICADAS")
-    print("=" * 70)
-
-    for serie_name in SERIES_NAMES:
-
-        order, seasonal_order = sarima_orders[
-            serie_name
-        ]
-
-        print(
-            f"{serie_name:15s}: "
-            f"SARIMA{order}{seasonal_order}"
-        )
-
-    print("\n" + "=" * 70)
-    print("MELHORES MODELOS POR SÉRIE")
-    print("=" * 70)
-
-    melhores = (
-        df_metricas
-        .loc[
-            df_metricas
-            .groupby("series")["mae"]
-            .idxmin()
-        ]
-        .sort_values("series")
-    )
-
-    print(melhores.to_string(index=False))
-
-    print("\n✓ Concluído!")
-    print("  - previsoes_validacao.csv")
-    print("  - metricas.csv")
-
-
-    
 
 if __name__ == "__main__":
     main()
