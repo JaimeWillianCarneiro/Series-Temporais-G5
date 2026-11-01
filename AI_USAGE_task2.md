@@ -22,7 +22,7 @@
 
 ## 4. Erros da IA identificados e corrigidos
 
-1. **Vazamento de dados (*Data Leakage*) no Merge de Validação Interna:** Inicialmente, a IA sugeriu fazer o merge do treino utilizando o `df_treino` completo logo na etapa de busca de hiperparâmetros. Isso `foi corrigido para utilizar estritamente o `df_treino_interno` (dados até `2016-02-28`) na validação e reservar o `df_treino` completo apenas para o treinamento definitivo.
+1. **Vazamento de dados (*Data Leakage*) no Merge de Validação Interna:** Inicialmente, a IA sugeriu fazer o merge do treino utilizando o `df_treino` completo logo na etapa de busca de hiperparâmetros. Isso foi corrigido para utilizar estritamente o `df_treino_interno` (dados até `2016-02-28`) na validação e reservar o `df_treino` completo apenas para o treinamento definitivo.
 2. **Incompatibilidade de Nomes de Colunas no Scikit-Learn:** O modelo gerava um `ValueError` de *feature names unseen at fit time* devido à presença simultânea de colunas padronizadas de preços de outras séries no `X`. O código foi ajustado para isolar e processar dinamicamente as colunas correspondentes à série em foco em cada iteração.
 3. **Escopo de Variáveis no Loop de Validação:** Correção de chamadas a variáveis estáticas e escopos cruzados de hiperparâmetros, passando a armazenar e recuperar os melhores `alpha` e estatísticas de padronização por meio de dicionários indexados pelo nome da série (`melhores_alpha`, `medias`, `desvios`).
 
