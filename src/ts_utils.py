@@ -1,3 +1,5 @@
+# ts_utils.py
+
 """Funções compartilhadas: dados, baselines e métricas (usadas por run.py e por analise_task1.ipynb)."""
 from pathlib import Path
 
