@@ -1,0 +1,4 @@
+series,alpha_lasso,arvore,mae_int_RandomForest,mae_int_GradientBoosting,mae_int_HistGradientBoosting
+store_total,1.0,GradientBoosting,303.2611868619311,276.2302812537416,317.3561492252446
+FOODS,1.0,HistGradientBoosting,214.7675292119377,218.66798814765818,208.6680712837967
+HOBBIES,0.001,GradientBoosting,76.12143906402036,75.38211635527979,76.10356314609692
