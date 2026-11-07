@@ -11,7 +11,7 @@
 * **Pré-processamento e Padronização:** Definição da estratégia de padronização manual de preços utilizando máscaras temporais estritamente restritas ao período de treino (evitando vazamento do conjunto de validação interna e holdout).
 * **Validação Interna Temporal:** Construção do laço de validação com corte em `2016-02-28` para simulação preditiva e seleção do melhor hiperparâmetro (`alpha = 10`) de forma independente para cada uma das séries.
 * **Treinamento Definitivo e Empacotamento:** Estruturação do fluxo para reter a base completa de treino (até `2016-03-27`), ajuste do modelo definitivo via `.fit()` e empacotamento dos objetos treinados junto com suas estatísticas de média e desvio em dicionários salvos via `joblib.dump()` (`.pkl`).
-* **Refatoração de Código em Laços (`for`):** Otimização do código para iterar dinamicamente sobre as listas de séries, selecionando alvos e covariáveis sem duplicação desnecessária de blocos.
+* **Modelagem com Árvores (Boosting):** RandomForest, GradientBoosting e HistGradientBoosting (scikit-learn) comparados por MAE na validação interna (origem 2016-02-28); vencedor por série: GradientBoosting (store_total, HOBBIES) e HistGradientBoosting (FOODS). Previsão recursiva, hiperparâmetros fixados antes da validação.
 
 ## 3. Prompts representativos
 
