@@ -30,7 +30,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.ensemble import GradientBoostingRegressor, HistGradientBoostingRegressor, RandomForestRegressor
-from sklearn.linear_model import Lasso
+from sklearn.linear_model import LinearRegression, Lasso, Ridge
 from sklearn.metrics import mean_absolute_error
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -40,7 +40,8 @@ from ts_utils import RAIZ, SERIES, calcular_metricas, carregar_dados  # noqa: E4
 ORIGEM = pd.Timestamp("2016-03-27")
 ORIGEM_INTERNA = pd.Timestamp("2016-02-28")
 LAGS = [1, 7, 14, 28]
-ALPHAS = [0.001, 0.01, 0.1, 1, 10, 100]
+ALPHAS_LASSO = [0.001, 0.01, 0.1, 1, 10, 100]
+ALPHAS_RIDGE = [0.001, 0.01, 0.1, 1, 10, 100]
 COLS_NAO_FEATURE = ["store_total", "FOODS", "HOBBIES", "date", "preco_store_total", "preco_FOODS", "preco_HOBBIES"]
 CANDIDATOS_ARVORE = {
     "RandomForest": lambda: RandomForestRegressor(n_estimators=300, max_depth=8, random_state=42, n_jobs=1),
@@ -289,7 +290,6 @@ def prever_recursivo(modelo, y_hist, cov_fut):
         ys.append(p)
     return np.array(preds)
 
-
 def main():
     treino, val = carregar_dados()
     treino = treino.sort_values("date").reset_index(drop=True)
@@ -315,14 +315,36 @@ def main():
         y_alvo = alvo_int[s].to_numpy()
         h_int = hist_int[s].to_numpy()
 
-        mae_alpha = {
+        # --- Validação Interna: OLS, Lasso e Ridge ---
+        ols = LinearRegression().fit(X_int, y_int)
+        mae_ols = mean_absolute_error(y_alvo, prever_recursivo(ols, h_int, cov_int_fut))
+
+        erros_lasso = {
             a: mean_absolute_error(
                 y_alvo, prever_recursivo(Lasso(alpha=a, max_iter=100000).fit(X_int, y_int), h_int, cov_int_fut)
-            )
-            for a in ALPHAS
+            ) for a in ALPHAS_LASSO
         }
-        alpha = min(mae_alpha, key=mae_alpha.get)
+        melhor_alpha_lasso = min(erros_lasso, key=erros_lasso.get)
+        mae_lasso = erros_lasso[melhor_alpha_lasso]
 
+        erros_ridge = {
+            a: mean_absolute_error(
+                y_alvo, prever_recursivo(Ridge(alpha=a).fit(X_int, y_int), h_int, cov_int_fut)
+            ) for a in ALPHAS_RIDGE
+        }
+        melhor_alpha_ridge = min(erros_ridge, key=erros_ridge.get)
+        mae_ridge = erros_ridge[melhor_alpha_ridge]
+
+        # Escolha do vencedor linear
+        candidatos_lineares = {
+            'OLS': (mae_ols, None),
+            'Lasso': (mae_lasso, melhor_alpha_lasso),
+            'Ridge': (mae_ridge, melhor_alpha_ridge)
+        }
+        tipo_linear = min(candidatos_lineares, key=lambda k: candidatos_lineares[k][0])
+        mae_linear, alpha_linear = candidatos_lineares[tipo_linear]
+
+        # --- Validação Interna: Árvore e Rede ---
         mae_arv = {
             n: mean_absolute_error(y_alvo, prever_recursivo(c().fit(X_int, y_int), h_int, cov_int_fut))
             for n, c in CANDIDATOS_ARVORE.items()
@@ -337,26 +359,38 @@ def main():
 
         escolhas.append({
             "series": s,
-            "alpha_lasso": alpha,
+            "tipo_linear": tipo_linear,
+            "alpha_linear": alpha_linear,
+            "mae_int_linear": mae_linear,
             "arvore": arvore,
             "rede": rede,
             "mae_int_rede": mae_rede[rede],
             **{f"mae_int_{n}": v for n, v in mae_arv.items()},
         })
         print(
-            f"{s}: alpha={alpha} | árvore={arvore} | rede={rede} (MAE int={round(mae_rede[rede], 1)}) | "
-            f"MAE interno árvores { {n: round(v, 1) for n, v in mae_arv.items()} }"
+            f"{s}: linear={tipo_linear} (a={alpha_linear}) | árvore={arvore} | rede={rede}\n"
+            f"   MAE int: linear={round(mae_linear,1)} | rede={round(mae_rede[rede], 1)} | "
+            f"árvores={ {n: round(v, 1) for n, v in mae_arv.items()} }"
         )
 
-        # ajuste definitivo em todo o treino e previsão recursiva da validação
+        # --- Ajuste definitivo em todo o treino ---
         X, y = montar_treino(treino, cov_fin, s)
+        
+        if tipo_linear == 'OLS':
+            clf_linear = LinearRegression().fit(X, y)
+        elif tipo_linear == 'Lasso':
+            clf_linear = Lasso(alpha=alpha_linear, max_iter=100000).fit(X, y)
+        elif tipo_linear == 'Ridge':
+            clf_linear = Ridge(alpha=alpha_linear).fit(X, y)
+
         modelos = {
-            "linear": Lasso(alpha=alpha, max_iter=100000).fit(X, y),
+            "linear": clf_linear,
             "boosting": CANDIDATOS_ARVORE[arvore]().fit(X, y),
             "rede": candidatos_rede[rede]().fit(X, y),
         }
+        
         joblib.dump(
-            {"modelo": modelos["linear"], "alpha": alpha, "lags": LAGS, "stats_precos": stats},
+            {"modelo": modelos["linear"], "tipo_modelo": tipo_linear, "alpha": alpha_linear, "lags": LAGS, "stats_precos": stats},
             RAIZ / f"modelo_{s}.pkl",
         )
         joblib.dump(
@@ -367,6 +401,7 @@ def main():
             {"modelo": modelos["rede"], "arquitetura_vencedora": rede, "lags": LAGS, "stats_precos": stats},
             RAIZ / f"modelo_rede_{s}.pkl",
         )
+        
         for nome, m in modelos.items():
             yhat = prever_recursivo(m, treino[s].to_numpy(), cov_val)
             linhas += [
@@ -401,7 +436,6 @@ def main():
         met.to_csv(pasta / "metricas.csv", index=False)
     print(met.round(3).to_string(index=False))
     print("\nConcluído: metricas.csv, previsoes_validacao.csv (raiz e saidas/), saidas/escolhas_task2.csv")
-
 
 if __name__ == "__main__":
     main()
