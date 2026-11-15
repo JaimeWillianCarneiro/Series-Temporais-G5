@@ -7,3 +7,5 @@ statsmodels==0.15.0
 # apenas para abrir os notebooks de src/entrega_1/
 ipykernel==7.4.0
 scikit-learn==1.9.1
+joblib
+torch
