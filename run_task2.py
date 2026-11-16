@@ -272,10 +272,10 @@ def carregar_covariaveis():
 
 
 def padronizar_precos(cov, ate):
-    """Padroniza preco_<serie> com média/desvio só das datas <= ate."""
+    """Padroniza preco_<serie> com média/desvio só das datas <= ate (Timestamp ou máscara booleana)."""
     cov = cov.copy()
     stats = {}
-    ref = cov["date"] <= ate
+    ref = ate if isinstance(ate, pd.Series) else cov["date"] <= ate
     for s in SERIES:
         m, d = cov.loc[ref, f"preco_{s}"].mean(), cov.loc[ref, f"preco_{s}"].std()
         stats[s] = (m, d)
@@ -307,6 +307,46 @@ def prever_recursivo(modelo, y_hist, cov_fut):
         ys.append(p)
     return np.array(preds)
 
+
+def _estimador_linear(tipo, alpha):
+    if tipo == "OLS":
+        return LinearRegression()
+    if tipo == "Lasso":
+        return Lasso(alpha=alpha, max_iter=100000)
+    if tipo == "Ridge":
+        return Ridge(alpha=alpha)
+    raise ValueError(tipo)
+
+
+def ajustar_linear(tipo, alpha, X, y):
+    """Modelo linear definitivo (pipeline com lags padronizados) do tipo e alpha escolhidos."""
+    return montar_linear(_estimador_linear(tipo, alpha)).fit(X, y)
+
+
+def escolher_linear(X_int, y_int, h_int, y_alvo, cov_int_fut):
+    """Valida OLS, Lasso e Ridge (grades ALPHAS_*) na validação interna recursiva.
+
+    Devolve (tipo, alpha, mae do vencedor, grades de MAE por alpha de Lasso e de Ridge, MAE do OLS).
+    """
+    def mae_de(tipo, alpha):
+        modelo = ajustar_linear(tipo, alpha, X_int, y_int)
+        return mean_absolute_error(y_alvo, prever_recursivo(modelo, h_int, cov_int_fut))
+
+    mae_ols = mae_de("OLS", None)
+    erros_lasso = {a: mae_de("Lasso", a) for a in ALPHAS_LASSO}
+    erros_ridge = {a: mae_de("Ridge", a) for a in ALPHAS_RIDGE}
+    alpha_lasso = min(erros_lasso, key=erros_lasso.get)
+    alpha_ridge = min(erros_ridge, key=erros_ridge.get)
+    candidatos = {
+        "OLS": (mae_ols, None),
+        "Lasso": (erros_lasso[alpha_lasso], alpha_lasso),
+        "Ridge": (erros_ridge[alpha_ridge], alpha_ridge),
+    }
+    tipo = min(candidatos, key=lambda k: candidatos[k][0])
+    mae, alpha = candidatos[tipo]
+    return tipo, alpha, mae, erros_lasso, erros_ridge, mae_ols
+
+
 def main():
     treino, val = carregar_dados()
     treino = treino.sort_values("date").reset_index(drop=True)
@@ -333,35 +373,7 @@ def main():
         h_int = hist_int[s].to_numpy()
 
         # --- Validação Interna: OLS, Lasso e Ridge ---
-        ols = montar_linear(LinearRegression()).fit(X_int, y_int)
-        mae_ols = mean_absolute_error(y_alvo, prever_recursivo(ols, h_int, cov_int_fut))
-
-        erros_lasso = {
-            a: mean_absolute_error(
-                y_alvo, prever_recursivo(
-                    montar_linear(Lasso(alpha=a, max_iter=100000)).fit(X_int, y_int), h_int, cov_int_fut
-                )
-            ) for a in ALPHAS_LASSO
-        }
-        melhor_alpha_lasso = min(erros_lasso, key=erros_lasso.get)
-        mae_lasso = erros_lasso[melhor_alpha_lasso]
-
-        erros_ridge = {
-            a: mean_absolute_error(
-                y_alvo, prever_recursivo(montar_linear(Ridge(alpha=a)).fit(X_int, y_int), h_int, cov_int_fut)
-            ) for a in ALPHAS_RIDGE
-        }
-        melhor_alpha_ridge = min(erros_ridge, key=erros_ridge.get)
-        mae_ridge = erros_ridge[melhor_alpha_ridge]
-
-        # Escolha do vencedor linear
-        candidatos_lineares = {
-            'OLS': (mae_ols, None),
-            'Lasso': (mae_lasso, melhor_alpha_lasso),
-            'Ridge': (mae_ridge, melhor_alpha_ridge)
-        }
-        tipo_linear = min(candidatos_lineares, key=lambda k: candidatos_lineares[k][0])
-        mae_linear, alpha_linear = candidatos_lineares[tipo_linear]
+        tipo_linear, alpha_linear, mae_linear, *_ = escolher_linear(X_int, y_int, h_int, y_alvo, cov_int_fut)
 
         # --- Validação Interna: Árvore e Rede ---
         mae_arv = {
@@ -395,12 +407,7 @@ def main():
         # --- Ajuste definitivo em todo o treino ---
         X, y = montar_treino(treino, cov_fin, s)
         
-        if tipo_linear == 'OLS':
-            clf_linear = montar_linear(LinearRegression()).fit(X, y)
-        elif tipo_linear == 'Lasso':
-            clf_linear = montar_linear(Lasso(alpha=alpha_linear, max_iter=100000)).fit(X, y)
-        elif tipo_linear == 'Ridge':
-            clf_linear = montar_linear(Ridge(alpha=alpha_linear)).fit(X, y)
+        clf_linear = ajustar_linear(tipo_linear, alpha_linear, X, y)
 
         modelos = {
             "linear": clf_linear,

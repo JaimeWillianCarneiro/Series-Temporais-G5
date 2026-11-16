@@ -24,7 +24,10 @@ tabelas, sem tocar nas linhas da Task 1. Rodar só `run.py` deixa `metricas.csv`
 
 [`analise_task2.ipynb`](analise_task2.ipynb) documenta a Task 2: colunas usadas, estratégia recursiva, escolha de
 hiperparâmetros na validação interna (origem 2016-02-28, dentro do treino) para `linear`, `boosting` e `rede`,
-visualizações e a comparação de cada classe com o naive sazonal e o SARIMA.
+visualizações e a comparação de cada classe com o naive sazonal e o SARIMA. Nas células do `linear`, o notebook
+importa as funções de [`run_task2.py`](run_task2.py) (features, padronização, escolha e ajuste do linear, previsão
+recursiva) em vez de reimplementá-las, e só **confere** as previsões e métricas contra `previsoes_validacao.csv` e
+`metricas.csv`, que quem grava é o `run_task2.py`. Rode `python run.py && python run_task2.py` antes do notebook.
 
 [`analise_task1.ipynb`](analise_task1.ipynb) é o documento principal da Task 1: diagnóstico (série, tendência,
 sazonalidade, zeros, ACF/PACF, ADF/KPSS), baselines e SARIMA, com o texto que justifica cada decisão
