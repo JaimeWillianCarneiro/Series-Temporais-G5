@@ -10,7 +10,10 @@ Mesma lógica de analise_task2.ipynb:
     event_name_1/2 e event_type_1/2; os três preços semanais padronizados com
     média/desvio do treino (na validação interna, do treino interno);
   - estratégia recursiva: a previsão de t+1 volta como lag; o y da validação nunca entra;
-  - hiperparâmetros: modelo linear (OLS, Lasso ou Ridge, com lags padronizados no treino) e alpha, escolha entre RandomForest / GradientBoosting /
+  - hiperparâmetros do linear: modelo (OLS, Lasso ou Ridge, com lags padronizados no treino) e alpha
+    por MAE médio em 3 origens internas (2016-01-03, 2016-01-31 e 2016-02-28), cada uma prevendo
+    os 28 dias seguintes, sempre dentro do treino;
+  - hiperparâmetros da árvore e da rede: escolha entre RandomForest / GradientBoosting /
     HistGradientBoosting e grade de redes neurais (MLP / RNN / LSTM) por MAE numa
     validação interna com origem 2016-02-28 (prevê 2016-02-29..2016-03-27, dentro
     do treino). Os 28 dias de validação só publicam.
@@ -42,6 +45,10 @@ from ts_utils import RAIZ, SERIES, calcular_metricas, carregar_dados  # noqa: E4
 
 ORIGEM = pd.Timestamp("2016-03-27")
 ORIGEM_INTERNA = pd.Timestamp("2016-02-28")
+# Validação interna do linear: origens deslizantes (janelas de 28 dias, sem sobreposição), todas dentro do treino.
+# A de 2015-12-06 ficou de fora porque sua janela contém o Natal (2015-12-25, vendas zero nas três séries).
+ORIGENS_INTERNAS = [pd.Timestamp("2016-01-03"), pd.Timestamp("2016-01-31"), ORIGEM_INTERNA]
+H = 28
 LAGS = [1, 7, 14, 28]
 ALPHAS_LASSO = [0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000]
 ALPHAS_RIDGE = [0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000]
@@ -323,28 +330,61 @@ def ajustar_linear(tipo, alpha, X, y):
     return montar_linear(_estimador_linear(tipo, alpha)).fit(X, y)
 
 
-def escolher_linear(X_int, y_int, h_int, y_alvo, cov_int_fut):
-    """Valida OLS, Lasso e Ridge (grades ALPHAS_*) na validação interna recursiva.
+def escolher_linear(treino, cov, serie, origens=ORIGENS_INTERNAS):
+    """Valida OLS, Lasso e Ridge (grades ALPHAS_*) em várias origens internas, com previsão recursiva.
 
-    Devolve (tipo, alpha, mae do vencedor, grades de MAE por alpha de Lasso e de Ridge, MAE do OLS).
+    Em cada origem o ajuste usa só o y até ela, e os preços são padronizados só com as datas até ela.
+    O critério é o MAE médio entre as origens. Devolve um dicionário com o vencedor (tipo, alpha, mae e
+    desvio entre as origens) e os MAE médios de cada candidato (mae_ols, erros_lasso, erros_ridge).
     """
-    def mae_de(tipo, alpha):
-        modelo = ajustar_linear(tipo, alpha, X_int, y_int)
-        return mean_absolute_error(y_alvo, prever_recursivo(modelo, h_int, cov_int_fut))
-
-    mae_ols = mae_de("OLS", None)
-    erros_lasso = {a: mae_de("Lasso", a) for a in ALPHAS_LASSO}
-    erros_ridge = {a: mae_de("Ridge", a) for a in ALPHAS_RIDGE}
-    alpha_lasso = min(erros_lasso, key=erros_lasso.get)
-    alpha_ridge = min(erros_ridge, key=erros_ridge.get)
-    candidatos = {
-        "OLS": (mae_ols, None),
-        "Lasso": (erros_lasso[alpha_lasso], alpha_lasso),
-        "Ridge": (erros_ridge[alpha_ridge], alpha_ridge),
+    candidatos = [("OLS", None)] + [("Lasso", a) for a in ALPHAS_LASSO] + [("Ridge", a) for a in ALPHAS_RIDGE]
+    por_origem = {c: [] for c in candidatos}
+    for o in origens:
+        cov_o, _ = padronizar_precos(cov, o)
+        hist = treino[treino["date"] <= o]
+        alvo = treino[(treino["date"] > o) & (treino["date"] <= o + pd.Timedelta(days=H))]
+        fut = cov_o[cov_o["date"].isin(alvo["date"])].sort_values("date")
+        X, y = montar_treino(hist, cov_o, serie)
+        h_hist = hist.sort_values("date")[serie].to_numpy()
+        y_alvo = alvo.sort_values("date")[serie].to_numpy()
+        for tipo, alpha in candidatos:
+            modelo = ajustar_linear(tipo, alpha, X, y)
+            por_origem[(tipo, alpha)].append(mean_absolute_error(y_alvo, prever_recursivo(modelo, h_hist, fut)))
+    media = {c: float(np.mean(v)) for c, v in por_origem.items()}
+    tipo, alpha = min(media, key=media.get)
+    return {
+        "tipo": tipo,
+        "alpha": alpha,
+        "mae": media[(tipo, alpha)],
+        "desvio": float(np.std(por_origem[(tipo, alpha)], ddof=1)),
+        "mae_ols": media[("OLS", None)],
+        "erros_lasso": {a: media[("Lasso", a)] for a in ALPHAS_LASSO},
+        "erros_ridge": {a: media[("Ridge", a)] for a in ALPHAS_RIDGE},
     }
-    tipo = min(candidatos, key=lambda k: candidatos[k][0])
-    mae, alpha = candidatos[tipo]
-    return tipo, alpha, mae, erros_lasso, erros_ridge, mae_ols
+
+
+def diagnostico_recursao(tipo, alpha, treino, cov, serie, origens=ORIGENS_INTERNAS):
+    """Mede o custo de ajustar com lags reais e prever com lags previstos (nas origens internas).
+
+    Para cada origem, ajusta o modelo escolhido só com o y até ela e compara, na janela de 28 dias seguinte,
+    o MAE de um passo à frente (lags reais, como no ajuste) com o MAE recursivo (lags previstos).
+    Devolve (MAE de um passo, MAE recursivo), médias entre as origens.
+    """
+    um_passo, recursivo = [], []
+    for o in origens:
+        cov_o, _ = padronizar_precos(cov, o)
+        fim = o + pd.Timedelta(days=H)
+        hist = treino[treino["date"] <= o]
+        janela = treino[(treino["date"] > o) & (treino["date"] <= fim)].sort_values("date")
+        X, y = montar_treino(hist, cov_o, serie)
+        modelo = ajustar_linear(tipo, alpha, X, y)
+        fut = cov_o[cov_o["date"].isin(janela["date"])].sort_values("date")
+        recursivo.append(mean_absolute_error(janela[serie], prever_recursivo(modelo, hist.sort_values("date")[serie].to_numpy(), fut)))
+        Xj, yj = montar_treino(treino[treino["date"] <= fim], cov_o, serie)
+        n = len(janela)
+        feats = list(modelo.feature_names_in_)
+        um_passo.append(mean_absolute_error(yj.iloc[-n:], modelo.predict(Xj.iloc[-n:][feats])))
+    return float(np.mean(um_passo)), float(np.mean(recursivo))
 
 
 def main():
@@ -373,7 +413,8 @@ def main():
         h_int = hist_int[s].to_numpy()
 
         # --- Validação Interna: OLS, Lasso e Ridge ---
-        tipo_linear, alpha_linear, mae_linear, *_ = escolher_linear(X_int, y_int, h_int, y_alvo, cov_int_fut)
+        esc_linear = escolher_linear(treino, cov, s)
+        tipo_linear, alpha_linear, mae_linear = esc_linear["tipo"], esc_linear["alpha"], esc_linear["mae"]
 
         # --- Validação Interna: Árvore e Rede ---
         mae_arv = {
@@ -393,6 +434,7 @@ def main():
             "tipo_linear": tipo_linear,
             "alpha_linear": alpha_linear,
             "mae_int_linear": mae_linear,
+            "desvio_int_linear": esc_linear["desvio"],
             "arvore": arvore,
             "rede": rede,
             "mae_int_rede": mae_rede[rede],
@@ -400,7 +442,7 @@ def main():
         })
         print(
             f"{s}: linear={tipo_linear} (a={alpha_linear}) | árvore={arvore} | rede={rede}\n"
-            f"   MAE int: linear={round(mae_linear,1)} | rede={round(mae_rede[rede], 1)} | "
+            f"   MAE int: linear={round(mae_linear,1)} (±{round(esc_linear['desvio'],1)} entre {len(ORIGENS_INTERNAS)} origens) | rede={round(mae_rede[rede], 1)} | "
             f"árvores={ {n: round(v, 1) for n, v in mae_arv.items()} }"
         )
 

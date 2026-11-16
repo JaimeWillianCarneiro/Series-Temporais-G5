@@ -23,7 +23,7 @@ tabelas, sem tocar nas linhas da Task 1. Rodar só `run.py` deixa `metricas.csv`
 ## Fonte da análise
 
 [`analise_task2.ipynb`](analise_task2.ipynb) documenta a Task 2: colunas usadas, estratégia recursiva, escolha de
-hiperparâmetros na validação interna (origem 2016-02-28, dentro do treino) para `linear`, `boosting` e `rede`,
+hiperparâmetros na validação interna (dentro do treino: três origens, 2016-01-03, 2016-01-31 e 2016-02-28, para o `linear`; origem 2016-02-28 para `boosting` e `rede`),
 visualizações e a comparação de cada classe com o naive sazonal e o SARIMA. Nas células do `linear`, o notebook
 importa as funções de [`run_task2.py`](run_task2.py) (features, padronização, escolha e ajuste do linear, previsão
 recursiva) em vez de reimplementá-las, e só **confere** as previsões e métricas contra `previsoes_validacao.csv` e
