@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Task 2 — linear (Lasso), árvore (boosting) e rede (MLP/RNN/LSTM), recursivos, a partir de dados/.
+"""Task 2 — linear (OLS/Lasso/Ridge), árvore (boosting) e rede (MLP/RNN/LSTM), recursivos, a partir de dados/.
 
 Roda depois de `run.py` (Task 1), que grava as linhas de baselines e SARIMA em
 metricas.csv / previsoes_validacao.csv. Este script acrescenta `linear`, `boosting`
@@ -10,7 +10,7 @@ Mesma lógica de analise_task2.ipynb:
     event_name_1/2 e event_type_1/2; os três preços semanais padronizados com
     média/desvio do treino (na validação interna, do treino interno);
   - estratégia recursiva: a previsão de t+1 volta como lag; o y da validação nunca entra;
-  - hiperparâmetros: alpha do Lasso, escolha entre RandomForest / GradientBoosting /
+  - hiperparâmetros: modelo linear (OLS, Lasso ou Ridge, com lags padronizados no treino) e alpha, escolha entre RandomForest / GradientBoosting /
     HistGradientBoosting e grade de redes neurais (MLP / RNN / LSTM) por MAE numa
     validação interna com origem 2016-02-28 (prevê 2016-02-29..2016-03-27, dentro
     do treino). Os 28 dias de validação só publicam.
@@ -30,8 +30,11 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.ensemble import GradientBoostingRegressor, HistGradientBoostingRegressor, RandomForestRegressor
+from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LinearRegression, Lasso, Ridge
 from sklearn.metrics import mean_absolute_error
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
@@ -40,8 +43,8 @@ from ts_utils import RAIZ, SERIES, calcular_metricas, carregar_dados  # noqa: E4
 ORIGEM = pd.Timestamp("2016-03-27")
 ORIGEM_INTERNA = pd.Timestamp("2016-02-28")
 LAGS = [1, 7, 14, 28]
-ALPHAS_LASSO = [0.001, 0.01, 0.1, 1, 10, 100]
-ALPHAS_RIDGE = [0.001, 0.01, 0.1, 1, 10, 100]
+ALPHAS_LASSO = [0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000]
+ALPHAS_RIDGE = [0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000]
 COLS_NAO_FEATURE = ["store_total", "FOODS", "HOBBIES", "date", "preco_store_total", "preco_FOODS", "preco_HOBBIES"]
 CANDIDATOS_ARVORE = {
     "RandomForest": lambda: RandomForestRegressor(n_estimators=300, max_depth=8, random_state=42, n_jobs=1),
@@ -248,6 +251,20 @@ def montar_candidatos_rede(input_size):
     }
 
 
+def montar_linear(estimador):
+    """Padroniza só os lag_* (média/desvio do treino do próprio ajuste) e aplica o estimador.
+
+    Dummies ficam em 0/1 e os preços já vêm padronizados com o treino; assim a
+    penalidade de Lasso/Ridge pesa igual em todas as colunas.
+    """
+    pre = ColumnTransformer(
+        [("lags", StandardScaler(), [f"lag_{l}" for l in LAGS])],
+        remainder="passthrough",
+        verbose_feature_names_out=False,
+    )
+    return Pipeline([("pre", pre), ("reg", estimador)])
+
+
 def carregar_covariaveis():
     cov = pd.read_csv(RAIZ / "dados" / "covariaveis.csv", parse_dates=["date"])
     cov["dia_semana"] = cov["date"].dt.dayofweek
@@ -316,12 +333,14 @@ def main():
         h_int = hist_int[s].to_numpy()
 
         # --- Validação Interna: OLS, Lasso e Ridge ---
-        ols = LinearRegression().fit(X_int, y_int)
+        ols = montar_linear(LinearRegression()).fit(X_int, y_int)
         mae_ols = mean_absolute_error(y_alvo, prever_recursivo(ols, h_int, cov_int_fut))
 
         erros_lasso = {
             a: mean_absolute_error(
-                y_alvo, prever_recursivo(Lasso(alpha=a, max_iter=100000).fit(X_int, y_int), h_int, cov_int_fut)
+                y_alvo, prever_recursivo(
+                    montar_linear(Lasso(alpha=a, max_iter=100000)).fit(X_int, y_int), h_int, cov_int_fut
+                )
             ) for a in ALPHAS_LASSO
         }
         melhor_alpha_lasso = min(erros_lasso, key=erros_lasso.get)
@@ -329,7 +348,7 @@ def main():
 
         erros_ridge = {
             a: mean_absolute_error(
-                y_alvo, prever_recursivo(Ridge(alpha=a).fit(X_int, y_int), h_int, cov_int_fut)
+                y_alvo, prever_recursivo(montar_linear(Ridge(alpha=a)).fit(X_int, y_int), h_int, cov_int_fut)
             ) for a in ALPHAS_RIDGE
         }
         melhor_alpha_ridge = min(erros_ridge, key=erros_ridge.get)
@@ -377,11 +396,11 @@ def main():
         X, y = montar_treino(treino, cov_fin, s)
         
         if tipo_linear == 'OLS':
-            clf_linear = LinearRegression().fit(X, y)
+            clf_linear = montar_linear(LinearRegression()).fit(X, y)
         elif tipo_linear == 'Lasso':
-            clf_linear = Lasso(alpha=alpha_linear, max_iter=100000).fit(X, y)
+            clf_linear = montar_linear(Lasso(alpha=alpha_linear, max_iter=100000)).fit(X, y)
         elif tipo_linear == 'Ridge':
-            clf_linear = Ridge(alpha=alpha_linear).fit(X, y)
+            clf_linear = montar_linear(Ridge(alpha=alpha_linear)).fit(X, y)
 
         modelos = {
             "linear": clf_linear,

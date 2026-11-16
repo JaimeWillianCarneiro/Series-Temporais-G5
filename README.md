@@ -3,7 +3,7 @@
 FGV EMAp · Séries Temporais 2026/2. Séries diárias da loja M5 `CA_1`: `store_total`, `FOODS`, `HOBBIES`.
 
 - Task 1: diagnóstico, baselines e ARIMA/SARIMA. Enunciado: [`docs/enunciado-task1.md`](docs/enunciado-task1.md)
-- Task 2: features de `covariaveis.csv`, `linear` (Lasso), `boosting` e `rede` (MLP/RNN/LSTM em PyTorch), previsão recursiva. Enunciado: [`docs/enunciado-task2.md`](docs/enunciado-task2.md)
+- Task 2: features de `covariaveis.csv`, `linear` (OLS, Lasso ou Ridge, escolhido por série; lags padronizados), `boosting` e `rede` (MLP/RNN/LSTM em PyTorch), previsão recursiva. Enunciado: [`docs/enunciado-task2.md`](docs/enunciado-task2.md)
 
 ## Como reproduzir
 
@@ -42,7 +42,7 @@ e a comparação com os baselines. Execute-o a partir da raiz, depois de rodar `
 | `figuras/diagnostico_<serie>.png` | série + média móvel, ACF e PACF no treino |
 | `figuras/acf_pacf_diferenciada_<serie>.png` | ACF/PACF após diff(1) e diff sazonal(7) |
 | `figuras/previsoes_validacao.png` | previsões vs. real na validação |
-| `saidas/escolhas_task2.csv` | `run_task2.py`: alpha do Lasso, árvore e rede escolhidas por série, com MAE da validação interna |
+| `saidas/escolhas_task2.csv` | `run_task2.py`: modelo linear (OLS/Lasso/Ridge) e alpha, árvore e rede escolhidos por série, com MAE da validação interna |
 | `modelo_<serie>.pkl`, `modelo_arvore_<serie>.pkl`, `modelo_rede_<serie>.pkl` | `run_task2.py`: modelos linear, boosting e rede ajustados até 2016-03-27 |
 
 ## Estrutura
