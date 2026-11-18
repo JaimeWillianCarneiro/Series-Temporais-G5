@@ -38,12 +38,27 @@ FIG = RAIZ / "figuras"
 SAIDAS = RAIZ / "saidas"  # tabelas auxiliares (metricas.csv e previsoes_validacao.csv ficam na raiz)
 LAGS = 3 * M + 7  # 28 lags: 4 ciclos semanais
 
-# Grade guiada pelo diagnóstico: D=1 (sazonalidade semanal forte no ACF), d in {0,1}.
-GRADE = list(itertools.product(range(3), (0, 1), range(3), range(2), (1,), range(2)))
+# d e D ficam FIXOS antes do AIC (AIC só compara modelos com a mesma diferenciação):
+#   D=1: sazonalidade semanal forte no ACF;
+#   d: definido por série pelos testes após o diff sazonal (ver definir_d), nunca pelo AIC.
+# O AIC só escolhe p, q, P, Q.
+D_SAZONAL = 1
+GRADE = list(itertools.product(range(3), range(3), range(2), range(2)))  # (p, q, P, Q)
+
+
+def definir_d(y, alfa=0.05):
+    """d = 0 se a série após o diff sazonal (D=1, m=7) passa ADF (rejeita raiz unitária) e KPSS (não rejeita
+    estacionariedade); senão d = 1. Usa só o treino e não depende do AIC nem da validação."""
+    ds = pd.Series(np.asarray(y, dtype=float)).diff(M).dropna().to_numpy()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # kpss avisa quando o p-valor sai da tabela
+        adf_p = adfuller(ds, autolag="AIC")[1]
+        kpss_p = kpss(ds, regression="c", nlags="auto")[1]
+    return 0 if (adf_p < alfa and kpss_p > alfa) else 1
 
 
 def diagnostico(treino):
-    """Figuras de série + ACF/PACF no treino, e ACF/PACF após diff(1) e diff sazonal(7)."""
+    """Figuras de série + ACF/PACF no treino, e ACF/PACF após a diferenciação escolhida (d por teste, D=1)."""
     FIG.mkdir(exist_ok=True)
     linhas = []
     for s in SERIES:
@@ -59,10 +74,14 @@ def diagnostico(treino):
         fig.savefig(FIG / f"diagnostico_{s}.png", dpi=110)
         plt.close(fig)
 
-        dif = y.diff().diff(M).dropna()
+        d = definir_d(y.values)
+        dif = y.diff(M).dropna()
+        rotulo = "diff sazonal(7)"
+        if d == 1:
+            dif, rotulo = dif.diff().dropna(), "diff(1) e diff sazonal(7)"
         fig, ax = plt.subplots(2, 1, figsize=(11, 6))
-        plot_acf(dif.values, lags=LAGS, ax=ax[0], title=f"ACF — {s} após diff(1) e diff sazonal(7)")
-        plot_pacf(dif.values, lags=LAGS, ax=ax[1], method="ywm", title=f"PACF — {s} após diff(1) e diff sazonal(7)")
+        plot_acf(dif.values, lags=LAGS, ax=ax[0], title=f"ACF — {s} após {rotulo}")
+        plot_pacf(dif.values, lags=LAGS, ax=ax[1], method="ywm", title=f"PACF — {s} após {rotulo}")
         fig.tight_layout()
         fig.savefig(FIG / f"acf_pacf_diferenciada_{s}.png", dpi=110)
         plt.close(fig)
@@ -72,12 +91,15 @@ def diagnostico(treino):
             adf = adfuller(y.values, autolag="AIC")[1]
             adf_sd = adfuller(y.diff(M).dropna().values, autolag="AIC")[1]
             kp = kpss(y.values, regression="c", nlags="auto")[1]
+            kp_sd = kpss(y.diff(M).dropna().values, regression="c", nlags="auto")[1]
         linhas.append({
             "series": s,
             "zeros": int((y == 0).sum()),
             "adf_p_nivel": adf,
             "kpss_p_nivel": kp,
             "adf_p_diff_sazonal": adf_sd,
+            "kpss_p_diff_sazonal": kp_sd,
+            "d_escolhido": d,
         })
     return pd.DataFrame(linhas)
 
@@ -96,8 +118,10 @@ def _ajusta(args):
 
 
 def identificar_sarima(y, nome):
-    """Escolhe a ordem por menor AIC dentro de GRADE (ajuste só no treino)."""
-    tarefas = [(y, (p, d, q), (P, D, Q, M)) for p, d, q, P, D, Q in GRADE]
+    """Fixa d (testes) e D=1 e escolhe p, q, P, Q por menor AIC dentro de GRADE (ajuste só no treino)."""
+    d = definir_d(y)
+    print(f"  {nome}: d={d}, D={D_SAZONAL} fixos antes do AIC")
+    tarefas = [(y, (p, d, q), (P, D_SAZONAL, Q, M)) for p, q, P, Q in GRADE]
     with ProcessPoolExecutor() as ex:
         res = [r for r in ex.map(_ajusta, tarefas) if r is not None and r[4]]
     res.sort(key=lambda r: r[2])

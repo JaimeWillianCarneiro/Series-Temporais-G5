@@ -43,7 +43,7 @@ e a comparação com os baselines. Execute-o a partir da raiz, depois de rodar `
 | `saidas/ordens_sarima.csv` | ordem SARIMA escolhida por série, com AIC/BIC |
 | `saidas/diagnostico_testes.csv` | zeros de calendário, ADF e KPSS |
 | `figuras/diagnostico_<serie>.png` | série + média móvel, ACF e PACF no treino |
-| `figuras/acf_pacf_diferenciada_<serie>.png` | ACF/PACF após diff(1) e diff sazonal(7) |
+| `figuras/acf_pacf_diferenciada_<serie>.png` | ACF/PACF após a diferenciação escolhida (diff sazonal(7); d=0 nas três séries) |
 | `figuras/previsoes_validacao.png` | previsões vs. real na validação |
 | `saidas/escolhas_task2.csv` | `run_task2.py`: modelo linear (OLS/Lasso/Ridge) e alpha, árvore e rede escolhidos por série, com MAE da validação interna |
 | `modelo_<serie>.pkl`, `modelo_arvore_<serie>.pkl`, `modelo_rede_<serie>.pkl` | `run_task2.py`: modelos linear, boosting e rede ajustados até 2016-03-27 |
